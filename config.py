@@ -1,0 +1,2 @@
+CLIENT_ID="6aec721e-dd66-40eb-8e5b-eab22d440ff1"
+CLIENT_SECRET="wa0eIjEz85x7PyOfjucucmgIhIjCfzHzSHkI"
