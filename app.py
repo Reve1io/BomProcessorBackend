@@ -4,10 +4,14 @@ from NexarClient import NexarClient
 from config import CLIENT_ID, CLIENT_SECRET
 import logging
 from dotenv import load_dotenv
+from flask_cors import CORS
 
 load_dotenv()
 
 app = Flask(__name__)
+
+client_app = os.getenv("CLIENT_APP")
+CORS(app, resources={r"/process": {"origins": client_app}})
 
 @app.route('/process', methods=['POST'])
 def process_bom():
