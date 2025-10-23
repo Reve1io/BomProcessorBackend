@@ -22,22 +22,35 @@ def process_bom():
     if not rows or not mapping:
         return jsonify({"error": "Нет данных или мэппинга"}), 400
 
-    # Извлекаем список MPN из данных
+    # Находим индексы колонок
     part_index = int(list(mapping.keys())[list(mapping.values()).index("partNumber")])
-    mpns = [row[part_index] for row in rows[1:] if len(row) > part_index]
+    quantity_index = (
+        int(list(mapping.keys())[list(mapping.values()).index("quantity")])
+        if "quantity" in mapping.values()
+        else None
+    )
 
-    app.logger.info(f"MPN для обработки: {mpns}")
+    # Собираем список MPN с количеством
+    mpn_list = []
+    for row in rows[1:]:
+        if len(row) > part_index:
+            mpn = str(row[part_index]).strip()
+            quantity = int(row[quantity_index]) if quantity_index is not None and len(row) > quantity_index and str(row[quantity_index]).isdigit() else None
+            mpn_list.append({"mpn": mpn, "quantity": quantity})
+
+    app.logger.info(f"MPN для обработки: {mpn_list}")
 
     # Обращаемся к Nexar API
     try:
-        nexar_data = process_chunk(mpns)
+        nexar_data = process_chunk(mpn_list)
     except Exception as e:
         app.logger.error(f"Ошибка при обработке: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"data": nexar_data})
 
-def process_chunk(mpns):
+
+def process_chunk(mpn_list):
     gqlQuery = '''
     query csvDemo ($queries: [SupPartMatchQuery!]!) {
       supMultiMatch (
@@ -70,7 +83,8 @@ def process_chunk(mpns):
     clientSecret = os.getenv("CLIENT_SECRET")
     nexar = NexarClient(clientId, clientSecret)
 
-    queries = [{"mpn": str(mpn)} for mpn in mpns]
+    # Формируем GraphQL-запрос
+    queries = [{"mpn": item["mpn"]} for item in mpn_list]
     variables = {"queries": queries}
 
     try:
@@ -79,12 +93,30 @@ def process_chunk(mpns):
         logging.error(f"Ошибка при GraphQL-запросе: {str(e)}")
         raise
 
+    # Обрабатываем результаты
     output_data = []
-    for query, mpn in zip(results.get("supMultiMatch", []), mpns):
+    for query, item in zip(results.get("supMultiMatch", []), mpn_list):
+        mpn = item["mpn"]
+        qty = item.get("quantity", None)
         parts = query.get("parts", [])
+
+        if not parts:
+            output_data.append({
+                "mpn": mpn,
+                "manufacturer": None,
+                "seller_id": None,
+                "seller_name": None,
+                "stock": None,
+                "offer_quantity": None,
+                "price": None,
+                "requested_quantity": qty,
+                "status": "Не найдено"
+            })
+            continue
+
         for part in parts:
             part_name = part.get("name", "")
-            part_manufacturer = part_name.rsplit(' ', 1)[0]
+            manufacturer = part_name.rsplit(' ', 1)[0]
             sellers = part.get("sellers", [])
             for seller in sellers:
                 seller_name = seller.get("company", {}).get("name", "")
@@ -94,16 +126,20 @@ def process_chunk(mpns):
                     stock = offer.get("inventoryLevel", "")
                     prices = offer.get("prices", [])
                     for price in prices:
-                        quantity = price.get("quantity", "")
-                        converted_price = price.get("convertedPrice", "")
-                        output_data.append([mpn,
-                                            part_manufacturer,
-                                            seller_id,
-                                            seller_name,
-                                            stock,
-                                            quantity,
-                                            converted_price])
+                        output_data.append({
+                            "mpn": mpn,
+                            "manufacturer": manufacturer,
+                            "seller_id": seller_id,
+                            "seller_name": seller_name,
+                            "stock": stock,
+                            "offer_quantity": price.get("quantity", ""),
+                            "price": price.get("convertedPrice", ""),
+                            "requested_quantity": qty,
+                            "status": "success"
+                        })
+
     return output_data
+
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5001)
