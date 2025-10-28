@@ -178,4 +178,4 @@ def process_chunk(mpn_list):
     return output_data
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=os.getenv("PORT"))
+    app.run(host='0.0.0.0', port=os.getenv("PORT"))
