@@ -36,7 +36,7 @@ jobs:
             
             cd /home/BomProcessorBackend
             
-            git pull origin master
+            git checkout origin/master -- . ':!*.env'
             
             if ! dpkg -l | grep -q python3-venv; then
               echo "📦 Installing python3-venv..."
