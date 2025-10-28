@@ -110,6 +110,8 @@ def process_chunk(mpn_list):
     app.logger.info(f"Отправка GraphQL запроса к Nexar: {gqlQuery}")
     app.logger.info(f"С переменными: {variables}")
 
+    ALLOWED_SELLERS = ["Mouser", "Digi-Key", "Arrow", "TTI", "ADI", "Coilcraft", "Rochester", "Verical", "Texas Instruments", "MINICIRCUITS"]
+
     try:
         results = nexar.get_query(gqlQuery, variables)
         app.logger.info(f"Ответ от Nexar: {results}")
@@ -141,9 +143,15 @@ def process_chunk(mpn_list):
             part_name = part.get("name", "")
             manufacturer = part_name.rsplit(' ', 1)[0]
             sellers = part.get("sellers", [])
+
             for seller in sellers:
                 seller_name = seller.get("company", {}).get("name", "")
                 seller_id = seller.get("company", {}).get("id", "")
+
+                if ALLOWED_SELLERS and seller_name not in ALLOWED_SELLERS:
+                    app.logger.debug(f"Продавец {seller_name} исключён (не в списке разрешённых).")
+                    continue
+
                 offers = seller.get("offers", [])
                 for offer in offers:
                     stock = offer.get("inventoryLevel", "")
