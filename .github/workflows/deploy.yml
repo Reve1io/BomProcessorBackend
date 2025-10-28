@@ -29,10 +29,42 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           script: |
+            set -e
+            echo "🚀 Starting deployment..."
+            
             cd /home/BomProcessorBackend
+            
             git pull origin master
+            
+            if ! dpkg -l | grep -q python3-venv; then
+              echo "📦 Installing python3-venv..."
+              sudo apt update
+              sudo apt install python3-venv python3-pip -y
+            fi
+            
+            if [ ! -d "venv" ]; then
+              echo "🐍 Creating virtual environment..."
+              python3 -m venv venv
+            fi
+            
             source venv/bin/activate
+            
             pip install -r requirements.txt
+            
+            sudo fuser -k 5002/tcp 2>/dev/null || true
+            sleep 2
+            
+            sudo systemctl daemon-reload
             sudo systemctl restart bom-processor
+            
+            sleep 5
+            
+            if sudo systemctl is-active --quiet bom-processor; then
+              echo "✅ Deployment successful!"
+            else
+              echo "❌ Service failed to start"
+              sudo systemctl status bom-processor
+              exit 1
+            fi
