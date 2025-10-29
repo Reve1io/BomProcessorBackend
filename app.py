@@ -99,6 +99,7 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
               inventoryLevel
               prices {
                 quantity
+                currency
                 convertedPrice
                 convertedCurrency
               }
@@ -149,6 +150,7 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                     "stock": None,
                     "offer_quantity": None,
                     "price": None,
+                    "currency": None,
                     "requested_quantity": item.get("quantity"),
                     "status": "Ошибка Nexar"
                 })
@@ -169,6 +171,7 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                     "stock": None,
                     "offer_quantity": None,
                     "price": None,
+                    "currency": None,
                     "requested_quantity": qty,
                     "status": "Не найдено"
                 })
@@ -200,6 +203,7 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                                 "stock": stock,
                                 "offer_quantity": price.get("quantity", ""),
                                 "price": price.get("convertedPrice", ""),
+                                "currency": price.get("currency", ""),
                                 "requested_quantity": qty,
                                 "status": "success"
                             })
@@ -213,6 +217,7 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                     "stock": None,
                     "offer_quantity": None,
                     "price": None,
+                    "currency": None,
                     "requested_quantity": qty,
                     "status": "Не найдено"
                 })
