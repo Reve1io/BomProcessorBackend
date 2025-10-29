@@ -195,6 +195,17 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                         stock = offer.get("inventoryLevel", "")
                         prices = offer.get("prices", [])
                         for price in prices:
+                            try:
+                                base_price = float(price.get("convertedPrice", 0))
+                            except (TypeError, ValueError):
+                                base_price = 0.0
+
+                            delivery_coef = 1.27
+                            markup = 1.18
+                            target_price_purchasing = base_price * 0.82  # минус 18%
+                            cost_with_delivery = target_price_purchasing + delivery_coef
+                            target_price_sales = target_price_purchasing + delivery_coef + markup
+
                             output_data.append({
                                 "mpn": mpn,
                                 "manufacturer": manufacturer,
@@ -202,10 +213,15 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                                 "seller_name": seller_name,
                                 "stock": stock,
                                 "offer_quantity": price.get("quantity", ""),
-                                "price": price.get("convertedPrice", ""),
+                                "price": base_price,
                                 "currency": price.get("currency", ""),
                                 "requested_quantity": qty,
-                                "status": "success"
+                                "status": "success",
+                                "delivery_coef": delivery_coef,
+                                "markup": markup,
+                                "target_price_purchasing": round(target_price_purchasing, 2),
+                                "cost_with_delivery": round(cost_with_delivery, 2),
+                                "target_price_sales": round(target_price_sales, 2)
                             })
 
             if not any(d["mpn"] == mpn for d in output_data):
