@@ -16,26 +16,30 @@ CORS(app, resources={r"/api/process": {"origins": client_app}})
 
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
-
-# Настройка логирования
 log_file = os.path.join(log_dir, "app.log")
 
-handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5)  # 5MB на файл, 5 бэкапов
-formatter = logging.Formatter(
-    '%(asctime)s [%(levelname)s] %(name)s - %(message)s'
-)
-handler.setFormatter(formatter)
+formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s - %(message)s')
 
-# Создаём root logger
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # DEBUG — максимально подробный уровень
-logger.addHandler(handler)
+# File handler
+file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5)
+file_handler.setFormatter(formatter)
 
-
-# Также можно выводить логи в консоль
+# Console handler
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
+
+# Root logger
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+logger.addHandler(file_handler)
 logger.addHandler(console_handler)
+
+# Интеграция с Gunicorn
+gunicorn_logger = logging.getLogger("gunicorn.error")
+if gunicorn_logger.handlers:
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
+    app.logger.propagate = False
 
 @app.route('/api/process', methods=['POST'])
 def process_bom():
