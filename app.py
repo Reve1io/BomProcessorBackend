@@ -1,4 +1,5 @@
 import os
+import time
 from flask import Flask, request, jsonify
 from NexarClient import NexarClient
 import logging
@@ -72,7 +73,10 @@ def process_bom():
     return jsonify({"data": nexar_data})
 
 
-def process_chunk(mpn_list):
+def process_chunk(mpn_list, chunk_size=10, max_retries=3):
+    """
+    Обрабатывает список MPN через Nexar API по чанкам с retry и экспоненциальным backoff.
+    """
     gqlQuery = '''
     query csvDemo ($queries: [SupPartMatchQuery!]!) {
       supMultiMatch (
@@ -105,85 +109,113 @@ def process_chunk(mpn_list):
     clientSecret = os.getenv("CLIENT_SECRET")
     nexar = NexarClient(clientId, clientSecret)
 
-    queries = [{"mpn": item["mpn"]} for item in mpn_list]
-    variables = {"queries": queries}
-    app.logger.info(f"Отправка GraphQL запроса к Nexar: {gqlQuery}")
-    app.logger.info(f"С переменными: {variables}")
-
-    ALLOWED_SELLERS = ["Mouser", "Digi-Key", "Arrow", "TTI", "ADI", "Coilcraft", "Rochester", "Verical", "Texas Instruments", "MINICIRCUITS"]
-
-    try:
-        results = nexar.get_query(gqlQuery, variables)
-        app.logger.info(f"Ответ от Nexar: {results}")
-    except Exception as e:
-        app.logger.error(f"Ошибка при GraphQL-запросе: {str(e)}", exc_info=True)
-        raise
+    ALLOWED_SELLERS = ["Mouser", "Digi-Key", "Arrow", "TTI", "ADI",
+                       "Coilcraft", "Rochester", "Verical", "Texas Instruments", "MINICIRCUITS"]
 
     output_data = []
-    for query, item in zip(results.get("supMultiMatch", []), mpn_list):
-        mpn = item["mpn"]
-        qty = item.get("quantity", None)
-        parts = query.get("parts", [])
 
-        if not parts:
-            output_data.append({
-                "mpn": mpn,
-                "manufacturer": None,
-                "seller_id": None,
-                "seller_name": None,
-                "stock": None,
-                "offer_quantity": None,
-                "price": None,
-                "requested_quantity": qty,
-                "status": "Не найдено"
-            })
+    # Разбиваем на чанки
+    for i in range(0, len(mpn_list), chunk_size):
+        chunk = mpn_list[i:i + chunk_size]
+        queries = [{"mpn": item["mpn"]} for item in chunk]
+        variables = {"queries": queries}
+
+        app.logger.info(f"Отправка GraphQL запроса к Nexar (чанк {i // chunk_size + 1}): {queries}")
+
+        # Retry с экспоненциальным backoff
+        for attempt in range(1, max_retries + 1):
+            try:
+                results = nexar.get_query(gqlQuery, variables)
+                app.logger.info(f"Ответ от Nexar (чанк {i // chunk_size + 1}): {results}")
+                break
+            except Exception as e:
+                wait = 2 ** (attempt - 1)
+                msg = str(e)
+                app.logger.warning(f"Nexar API ошибка (попытка {attempt}/{max_retries}): {msg}. Жду {wait}s перед повтором.")
+                time.sleep(wait)
+        else:
+            app.logger.error(f"Nexar API не ответил корректно после {max_retries} попыток для чанка {i // chunk_size + 1}")
+            # добавляем статус ошибки для каждого MPN в чанке
+            for item in chunk:
+                output_data.append({
+                    "mpn": item["mpn"],
+                    "manufacturer": None,
+                    "seller_id": None,
+                    "seller_name": None,
+                    "stock": None,
+                    "offer_quantity": None,
+                    "price": None,
+                    "requested_quantity": item.get("quantity"),
+                    "status": "Ошибка Nexar"
+                })
             continue
 
-        for part in parts:
-            part_name = part.get("name", "")
-            manufacturer = part_name.rsplit(' ', 1)[0]
-            sellers = part.get("sellers", [])
+        # Обработка успешного ответа
+        for query, item in zip(results.get("supMultiMatch", []), chunk):
+            mpn = item["mpn"]
+            qty = item.get("quantity")
+            parts = query.get("parts", [])
 
-            for seller in sellers:
-                seller_name = seller.get("company", {}).get("name", "")
-                seller_id = seller.get("company", {}).get("id", "")
+            if not parts:
+                output_data.append({
+                    "mpn": mpn,
+                    "manufacturer": None,
+                    "seller_id": None,
+                    "seller_name": None,
+                    "stock": None,
+                    "offer_quantity": None,
+                    "price": None,
+                    "requested_quantity": qty,
+                    "status": "Не найдено"
+                })
+                continue
 
-                if ALLOWED_SELLERS and seller_name not in ALLOWED_SELLERS:
-                    app.logger.debug(f"Продавец {seller_name} исключён (не в списке разрешённых).")
-                    continue
+            for part in parts:
+                part_name = part.get("name", "")
+                manufacturer = part_name.rsplit(' ', 1)[0]
+                sellers = part.get("sellers", [])
 
-                offers = seller.get("offers", [])
-                for offer in offers:
-                    stock = offer.get("inventoryLevel", "")
-                    prices = offer.get("prices", [])
-                    for price in prices:
-                        output_data.append({
-                            "mpn": mpn,
-                            "manufacturer": manufacturer,
-                            "seller_id": seller_id,
-                            "seller_name": seller_name,
-                            "stock": stock,
-                            "offer_quantity": price.get("quantity", ""),
-                            "price": price.get("convertedPrice", ""),
-                            "requested_quantity": qty,
-                            "status": "success"
-                        })
+                for seller in sellers:
+                    seller_name = seller.get("company", {}).get("name", "")
+                    seller_id = seller.get("company", {}).get("id", "")
 
-        if not any(d["mpn"] == mpn for d in output_data):
-            output_data.append({
-                "mpn": mpn,
-                "manufacturer": None,
-                "seller_id": None,
-                "seller_name": None,
-                "stock": None,
-                "offer_quantity": None,
-                "price": None,
-                "requested_quantity": qty,
-                "status": "Не найдено"
-            })
+                    if ALLOWED_SELLERS and seller_name not in ALLOWED_SELLERS:
+                        app.logger.debug(f"Продавец {seller_name} исключён (не в списке разрешённых).")
+                        continue
+
+                    offers = seller.get("offers", [])
+                    for offer in offers:
+                        stock = offer.get("inventoryLevel", "")
+                        prices = offer.get("prices", [])
+                        for price in prices:
+                            output_data.append({
+                                "mpn": mpn,
+                                "manufacturer": manufacturer,
+                                "seller_id": seller_id,
+                                "seller_name": seller_name,
+                                "stock": stock,
+                                "offer_quantity": price.get("quantity", ""),
+                                "price": price.get("convertedPrice", ""),
+                                "requested_quantity": qty,
+                                "status": "success"
+                            })
+
+            if not any(d["mpn"] == mpn for d in output_data):
+                output_data.append({
+                    "mpn": mpn,
+                    "manufacturer": None,
+                    "seller_id": None,
+                    "seller_name": None,
+                    "stock": None,
+                    "offer_quantity": None,
+                    "price": None,
+                    "requested_quantity": qty,
+                    "status": "Не найдено"
+                })
 
     app.logger.info(f"Сформированный output_data: {output_data}")
     return output_data
+
 
 if __name__ == '__main__':
     app.run(host=os.getenv("HOST"), port=os.getenv("PORT"))
