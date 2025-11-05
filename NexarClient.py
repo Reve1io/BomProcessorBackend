@@ -1,4 +1,5 @@
 """Resources for making Nexar requests."""
+import os
 import requests
 import base64
 import json

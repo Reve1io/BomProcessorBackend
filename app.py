@@ -76,7 +76,6 @@ def process_bom():
     app.logger.info(f"Бэкенд возвращает данные: {nexar_data}")
     return jsonify({"data": nexar_data})
 
-
 def process_chunk(mpn_list, chunk_size=10, max_retries=3):
     """
     Обрабатывает список MPN через Nexar API по чанкам с retry и экспоненциальным backoff.
@@ -84,16 +83,32 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
     gqlQuery = '''
     query csvDemo ($queries: [SupPartMatchQuery!]!) {
       supMultiMatch (
-        currency: "EUR",
+        currency: "USD",
         queries: $queries
       ) {
         parts {
           mpn
           name
+          category {
+            id
+            name
+          }
+          images {
+            url
+          }
+          descriptions {
+            text
+          }
+          manufacturer {
+            id
+            name
+          }
           sellers {
             company {
               id
               name
+              isVerified
+              homepageUrl
             }
             offers {
               inventoryLevel
@@ -145,12 +160,20 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                 output_data.append({
                     "mpn": item["mpn"],
                     "manufacturer": None,
+                    "manufacturer_id": None,
+                    "manufacturer_name": None,
                     "seller_id": None,
                     "seller_name": None,
+                    "seller_verified": None,
+                    "seller_homepageUrl": None,
                     "stock": None,
                     "offer_quantity": None,
                     "price": None,
                     "currency": None,
+                    "category_id": None,
+                    "category_name": None,
+                    "image_url": None,
+                    "description": None,
                     "requested_quantity": item.get("quantity"),
                     "status": "Ошибка Nexar"
                 })
@@ -166,12 +189,20 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                 output_data.append({
                     "mpn": mpn,
                     "manufacturer": None,
+                    "manufacturer_id": None,
+                    "manufacturer_name": None,
                     "seller_id": None,
                     "seller_name": None,
+                    "seller_verified": None,
+                    "seller_homepageUrl": None,
                     "stock": None,
                     "offer_quantity": None,
                     "price": None,
                     "currency": None,
+                    "category_id": None,
+                    "category_name": None,
+                    "image_url": None,
+                    "description": None,
                     "requested_quantity": qty,
                     "status": "Не найдено"
                 })
@@ -180,11 +211,30 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
             for part in parts:
                 part_name = part.get("name", "")
                 manufacturer = part_name.rsplit(' ', 1)[0]
-                sellers = part.get("sellers", [])
 
+                manufacturer_data = part.get("manufacturer")
+
+                if isinstance(manufacturer_data, dict):
+                    manufacturer_id = manufacturer_data.get("id", "")
+                    manufacturer_name = manufacturer_data.get("name", "")
+                else:
+                    manufacturer_id = ""
+                    manufacturer_name = manufacturer_data if isinstance(manufacturer_data, str) else ""
+
+                category = part.get("category") or {}
+                category_id = category.get("id", "")
+                category_name = category.get("name", "")
+
+                image_url = part.get("imageUrl", "")
+
+                descriptions = part.get("descriptions", "")
+
+                sellers = part.get("sellers", [])
                 for seller in sellers:
                     seller_name = seller.get("company", {}).get("name", "")
                     seller_id = seller.get("company", {}).get("id", "")
+                    seller_verified = seller.get("company", {}).get("isVerified", "")
+                    seller_homepageUrl = seller.get("company", {}).get("homepageUrl", "")
 
                     if ALLOWED_SELLERS and seller_name not in ALLOWED_SELLERS:
                         app.logger.debug(f"Продавец {seller_name} исключён (не в списке разрешённых).")
@@ -209,12 +259,20 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                             output_data.append({
                                 "mpn": mpn,
                                 "manufacturer": manufacturer,
+                                "manufacturer_id": manufacturer_id,
+                                "manufacturer_name": manufacturer_name,
                                 "seller_id": seller_id,
                                 "seller_name": seller_name,
+                                "seller_verified": seller_verified,
+                                "seller_homepageUrl": seller_homepageUrl,
                                 "stock": stock,
                                 "offer_quantity": price.get("quantity", ""),
                                 "price": base_price,
                                 "currency": price.get("currency", ""),
+                                "category_id": category_id,
+                                "category_name": category_name,
+                                "image_url": image_url,
+                                "description": descriptions,
                                 "requested_quantity": qty,
                                 "status": "success",
                                 "delivery_coef": delivery_coef,
@@ -228,12 +286,26 @@ def process_chunk(mpn_list, chunk_size=10, max_retries=3):
                 output_data.append({
                     "mpn": mpn,
                     "manufacturer": None,
+                    "manufacturer_id": None,
+                    "manufacturer_name": None,
                     "seller_id": None,
                     "seller_name": None,
+                    "seller_verified": None,
+                    "seller_homepageUrl": None,
                     "stock": None,
                     "offer_quantity": None,
                     "price": None,
                     "currency": None,
+                    "category_id": None,
+                    "category_name": None,
+                    "image_url": None,
+                    "description": None,
+                    "displayValue": None,
+                    "siValue": None,
+                    "units": None,
+                    "unitsName": None,
+                    "unitsSymbol": None,
+                    "value": None,
                     "requested_quantity": qty,
                     "status": "Не найдено"
                 })
