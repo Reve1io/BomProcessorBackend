@@ -59,10 +59,26 @@ def process_bom():
     )
 
     mpn_list = []
-    for row in rows[1:]:
+
+    # Проверяем первую строку — содержит ли она слово, похожее на заголовок
+    first_row = rows[0]
+    is_header = any(
+        str(cell).lower() in ["mpn", "partnumber", "количество", "quantity", "manufacturer", "производитель"]
+        for cell in first_row
+    )
+
+    start_index = 1 if is_header else 0
+
+    for row in rows[start_index:]:
         if len(row) > part_index:
             mpn = str(row[part_index]).strip()
-            quantity = int(row[quantity_index]) if quantity_index is not None and len(row) > quantity_index and str(row[quantity_index]).isdigit() else None
+            if not mpn:
+                continue  # пропускаем пустые
+            quantity = (
+                int(row[quantity_index])
+                if quantity_index is not None and len(row) > quantity_index and str(row[quantity_index]).isdigit()
+                else None
+            )
             mpn_list.append({"mpn": mpn, "quantity": quantity})
 
     app.logger.info(f"Сформирован список MPN для обработки: {mpn_list}")
