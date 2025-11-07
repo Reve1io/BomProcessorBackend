@@ -57,6 +57,7 @@ class NexarClient:
             r = self.s.post(
                 NEXAR_URL,
                 json={"query": query, "variables": variables},
+                timeout=(5, 30)
             )
         except Exception as e:
             print(e)
