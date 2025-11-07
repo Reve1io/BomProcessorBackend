@@ -87,7 +87,10 @@ def process_bom():
         nexar_data = process_chunk(mpn_list)
     except Exception as e:
         app.logger.error(f"Ошибка при обработке: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "status": "error",
+            "message": str(e) or "Неизвестная ошибка при обработке"
+        }),
 
     app.logger.info(f"Бэкенд возвращает данные: {nexar_data}")
     return jsonify({"data": nexar_data})
