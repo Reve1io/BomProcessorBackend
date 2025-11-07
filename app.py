@@ -92,7 +92,7 @@ def process_bom():
     app.logger.info(f"Бэкенд возвращает данные: {nexar_data}")
     return jsonify({"data": nexar_data})
 
-def process_chunk(mpn_list, chunk_size=100, max_retries=3):
+def process_chunk(mpn_list, chunk_size=15, max_retries=3):
     """
     Обрабатывает список MPN через Nexar API по чанкам с retry и экспоненциальным backoff.
     """
