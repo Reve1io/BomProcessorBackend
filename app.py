@@ -12,7 +12,9 @@ load_dotenv()
 app = Flask(__name__)
 
 client_app = os.getenv("CLIENT_APP")
-CORS(app, resources={r"/api/process": {"origins": client_app}})
+client_tellur = os.getenv("CLIENT_TELLUR")
+
+CORS(app, resources={r"/api/process": {"origins": [client_app, client_tellur]}})
 
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
