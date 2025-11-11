@@ -6,6 +6,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from flask_cors import CORS
+import requests
+from functools import lru_cache
 
 load_dotenv()
 
@@ -48,6 +50,7 @@ def process_bom():
     data = request.get_json()
     app.logger.info(f"Получен запрос на /api/process: {data}")  # лог запроса
     mapping = data.get("mapping", {})
+    mode = data.get("mode", "full")
     rows = data.get("data", [])
 
     if not rows or not mapping:
@@ -86,18 +89,18 @@ def process_bom():
     app.logger.info(f"Сформирован список MPN для обработки: {mpn_list}")
 
     try:
-        nexar_data = process_chunk(mpn_list)
+        nexar_data = process_chunk(mpn_list, mode)
     except Exception as e:
         app.logger.error(f"Ошибка при обработке: {str(e)}", exc_info=True)
         return jsonify({
             "status": "error",
             "message": str(e) or "Неизвестная ошибка при обработке"
-        }),
+        })
 
     app.logger.info(f"Бэкенд возвращает данные: {nexar_data}")
     return jsonify({"data": nexar_data})
 
-def process_chunk(mpn_list, chunk_size=15, max_retries=3):
+def process_chunk(mpn_list, mode, chunk_size=15, max_retries=3):
     """
     Обрабатывает список MPN через Nexar API по чанкам с retry и экспоненциальным backoff.
     """
@@ -246,7 +249,7 @@ def process_chunk(mpn_list, chunk_size=15, max_retries=3):
                 category_id = category.get("id", "")
                 category_name = category.get("name", "")
 
-                image_url = part.get("imageUrl", "")
+                image_url = part.get("images", "") or []
 
                 descriptions = part.get("descriptions", "")
 
@@ -332,8 +335,58 @@ def process_chunk(mpn_list, chunk_size=15, max_retries=3):
                 })
 
     app.logger.info(f"Сформированный output_data: {output_data}")
+
+    if mode == "short":
+        rate = get_usd_to_rub_rate()
+        app.logger.info(f"Текущий курс USD→RUB: {rate}")
+        output_data = [
+            {
+                "mpn": item["mpn"],
+                "manufacturer": item.get("manufacturer"),
+                "requested_quantity": item.get("requested_quantity"),
+                "stock": item.get("stock"),
+                "price": round(item.get("price", 0) * rate, 2) if item.get("price") else None,
+                "currency": "RUB",
+                "status": item.get("status")
+            }
+            for i, item in enumerate(output_data)
+        ]
+        app.logger.info(f"Короткие данные: {output_data}")
+
+    else:
+        # оставляем полные данные
+        pass
+    app.logger.info(f"Режим обработки: {mode}")
+
     return output_data
 
+@lru_cache(maxsize=1)
+def get_usd_to_rub_rate_cached():
+    url = "https://api.exchangerate.host/latest?base=USD&symbols=RUB"
+    r = requests.get(url, timeout=5)
+    rate = r.json()["rates"]["RUB"]
+    get_usd_to_rub_rate_cached.last_update = time.time()
+    return rate
+
+USD_RUB_RATE = None
+USD_RUB_LAST_UPDATE = 0
+
+def get_usd_to_rub_rate():
+    global USD_RUB_RATE, USD_RUB_LAST_UPDATE
+    now = time.time()
+    # обновляем не чаще, чем раз в 6 часов
+    if not USD_RUB_RATE or now - USD_RUB_LAST_UPDATE > 6 * 3600:
+        try:
+            url = "https://api.exchangerate.host/latest?base=USD&symbols=RUB"
+            r = requests.get(url, timeout=5)
+            USD_RUB_RATE = r.json()["rates"]["RUB"]
+            USD_RUB_LAST_UPDATE = now
+            app.logger.info(f"Курс USD→RUB обновлён: {USD_RUB_RATE}")
+        except Exception as e:
+            app.logger.error(f"Ошибка при получении курса валют: {e}")
+            # fallback на старый курс
+            USD_RUB_RATE = USD_RUB_RATE or 100.0
+    return USD_RUB_RATE
 
 if __name__ == '__main__':
     app.run(host=os.getenv("HOST"), port=os.getenv("PORT"))
