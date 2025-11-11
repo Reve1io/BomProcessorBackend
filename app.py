@@ -298,7 +298,7 @@ def process_chunk(mpn_list, mode, chunk_size=15, max_retries=3):
                                 "image_url": image_url,
                                 "description": descriptions,
                                 "requested_quantity": qty,
-                                "status": "success",
+                                "status": "Найдено",
                                 "delivery_coef": delivery_coef,
                                 "markup": markup,
                                 "target_price_purchasing": round(target_price_purchasing, 2),
