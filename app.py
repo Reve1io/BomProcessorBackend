@@ -1,5 +1,7 @@
 import os
 import time
+import asyncio
+import aiohttp
 from flask import Flask, request, jsonify
 from NexarClient import NexarClient
 import logging
@@ -7,7 +9,6 @@ from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from flask_cors import CORS
 import requests
-from functools import lru_cache
 
 load_dotenv()
 
@@ -16,157 +17,168 @@ app = Flask(__name__)
 client_app = os.getenv("CLIENT_APP")
 client_tellur = os.getenv("CLIENT_TELLUR")
 
-CORS(app, resources={r"/api/process": {"origins": [client_app, client_tellur]}})
+origins = []
+if client_app:
+    origins.append(client_app)
+if client_tellur:
+    origins.append(client_tellur)
+if not origins:
+    origins = "*"
+
+CORS(app, resources={r"/api/process": {"origins": origins}})
 
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "app.log")
 
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s - %(message)s')
-
-# File handler
-file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5)
+file_handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=5)
 file_handler.setFormatter(formatter)
-
-# Console handler
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
-
-# Root logger
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
+if not logger.handlers:
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
-# Интеграция с Gunicorn
 gunicorn_logger = logging.getLogger("gunicorn.error")
-if gunicorn_logger.handlers:
+if getattr(gunicorn_logger, 'handlers', None):
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
     app.logger.propagate = False
 
+
 @app.route('/api/process', methods=['POST'])
 def process_bom():
-    data = request.get_json()
-    app.logger.info(f"Получен запрос на /api/process: {data}")  # лог запроса
+    data = request.get_json(force=True)
+    app.logger.info(f"Получен запрос на /api/process: {data}")
     mapping = data.get("mapping", {})
     mode = data.get("mode", "full")
     rows = data.get("data", [])
 
-    if not rows or not mapping:
+    if not rows and not data.get("q"):
         return jsonify({"error": "Нет данных или мэппинга"}), 400
 
-    part_index = int(list(mapping.keys())[list(mapping.values()).index("partNumber")])
-    quantity_index = (
-        int(list(mapping.keys())[list(mapping.values()).index("quantity")])
-        if "quantity" in mapping.values()
-        else None
-    )
-
     mpn_list = []
+    if rows:
+        keys = list(mapping.keys())
+        values = list(mapping.values())
+        try:
+            part_index = int(keys[values.index("partNumber")])
+        except Exception:
+            return jsonify({"error": "Не удалось распознать индекс partNumber в mapping"}), 400
 
-    # Проверяем первую строку — содержит ли она слово, похожее на заголовок
-    first_row = rows[0]
-    is_header = any(
-        str(cell).lower() in ["mpn", "partnumber", "количество", "quantity", "manufacturer", "производитель"]
-        for cell in first_row
-    )
+        quantity_index = None
+        if "quantity" in values:
+            try:
+                quantity_index = int(keys[values.index("quantity")])
+            except Exception:
+                quantity_index = None
 
-    start_index = 1 if is_header else 0
+        start_index = 1 if any(str(cell).lower() in ["mpn", "partnumber", "количество", "quantity", "manufacturer", "производитель"] for cell in rows[0]) else 0
 
-    for row in rows[start_index:]:
-        if len(row) > part_index:
-            mpn = str(row[part_index]).strip()
-            if not mpn:
-                continue  # пропускаем пустые
-            quantity = (
-                int(row[quantity_index])
-                if quantity_index is not None and len(row) > quantity_index and str(row[quantity_index]).isdigit()
-                else None
-            )
-            mpn_list.append({"mpn": mpn, "quantity": quantity})
+        for row in rows[start_index:]:
+            if len(row) > part_index:
+                mpn = str(row[part_index]).strip()
+                if not mpn:
+                    continue
+                quantity = None
+                if quantity_index is not None and len(row) > quantity_index:
+                    try:
+                        quantity = int(row[quantity_index])
+                    except Exception:
+                        quantity = None
+                mpn_list.append({"mpn": mpn, "quantity": quantity})
+
+    elif data.get("q"):
+        mpn_list.append({"mpn": data["q"], "quantity": None})
 
     app.logger.info(f"Сформирован список MPN для обработки: {mpn_list}")
 
     try:
-        nexar_data = process_chunk(mpn_list, mode)
+        nexar_data = asyncio.run(process_all_mpn(mpn_list, mode))
     except Exception as e:
         app.logger.error(f"Ошибка при обработке: {str(e)}", exc_info=True)
-        return jsonify({
-            "status": "error",
-            "message": str(e) or "Неизвестная ошибка при обработке"
-        })
+        return jsonify({"status": "error", "message": str(e) or "Неизвестная ошибка при обработке"}), 500
 
-    app.logger.info(f"Бэкенд возвращает данные: {nexar_data}")
     return jsonify({"data": nexar_data})
 
-def process_chunk(mpn_list, mode, chunk_size=15, max_retries=3):
-    """
-    Обрабатывает список MPN через Nexar API по чанкам с retry и экспоненциальным backoff.
-    """
-    gqlQuery = '''
-    query csvDemo ($queries: [SupPartMatchQuery!]!) {
-      supMultiMatch (
-        currency: "USD",
-        queries: $queries
-      ) {
-        parts {
-          mpn
-          name
-          category {
-            id
-            name
-          }
-          images {
-            url
-          }
-          descriptions {
-            text
-          }
-          manufacturer {
-            id
-            name
-          }
-          sellers {
-            company {
-              id
-              name
-              isVerified
-              homepageUrl
+
+async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
+    clientId = os.getenv("CLIENT_ID")
+    clientSecret = os.getenv("CLIENT_SECRET")
+    nexar = NexarClient(clientId, clientSecret)
+    ALLOWED_SELLERS = [
+        "Mouser", "Digi-Key", "Arrow", "TTI", "ADI",
+        "Coilcraft", "Rochester", "Verical", "Texas Instruments", "MINICIRCUITS"
+    ]
+
+    output_data = []
+
+    # --- 1. Partial-запросы для поиска всех вариаций ---
+    async def partial_request_variations(mpn_item):
+        gqlQuery = '''
+        query Search ($q: String!) {
+          supSearch(q: $q, limit: 50, currency: "USD") {
+            results {
+              part { mpn name }
             }
-            offers {
-              inventoryLevel
-              prices {
-                quantity
-                currency
-                convertedPrice
-                convertedCurrency
+          }
+        }
+        '''
+        variables = {"q": mpn_item["mpn"]}
+        for attempt in range(1, max_retries + 1):
+            try:
+                result = nexar.get_query(gqlQuery, variables)
+                break
+            except Exception as e:
+                wait = 2 ** (attempt - 1)
+                app.logger.warning(f"Partial-запрос Nexar ошибка ({mpn_item['mpn']}, попытка {attempt}/{max_retries}): {e}. Жду {wait}s.")
+                await asyncio.sleep(wait)
+        else:
+            return [mpn_item["mpn"]]
+
+        items = result.get("supSearch", {}).get("results", [])
+        variants = []
+        for item in items:
+            part = item.get("part")
+            if part and part.get("mpn"):
+                variants.append(part["mpn"])
+        return variants or [mpn_item["mpn"]]
+
+    # Запускаем partial для всех исходных MPN
+    partial_tasks = [partial_request_variations(item) for item in mpn_list]
+    all_variants_lists = await asyncio.gather(*partial_tasks)
+
+    # --- 2. Multi-запросы для всех найденных вариантов ---
+    # Преобразуем список списков в плоский список словарей для multi-запросов
+    multi_mpn_list = [{"mpn": v} for sublist in all_variants_lists for v in sublist]
+
+    # Разбиваем на чанки
+    for i in range(0, len(multi_mpn_list), chunk_size):
+        chunk = multi_mpn_list[i:i + chunk_size]
+        variables = {"queries": [{"mpn": item["mpn"]} for item in chunk]}
+        gqlQuery = '''
+        query csvDemo($queries: [SupPartMatchQuery!]!) {
+          supMultiMatch(currency: "USD", queries: $queries) {
+            parts {
+              mpn
+              name
+              category { id name }
+              images { url }
+              descriptions { text }
+              manufacturer { id name }
+              sellers {
+                company { id name isVerified homepageUrl }
+                offers { inventoryLevel prices { quantity currency convertedPrice convertedCurrency } }
               }
             }
           }
         }
-      }
-    }
-    '''
+        '''
 
-    clientId = os.getenv("CLIENT_ID")
-    clientSecret = os.getenv("CLIENT_SECRET")
-    nexar = NexarClient(clientId, clientSecret)
-
-    ALLOWED_SELLERS = ["Mouser", "Digi-Key", "Arrow", "TTI", "ADI",
-                       "Coilcraft", "Rochester", "Verical", "Texas Instruments", "MINICIRCUITS"]
-
-    output_data = []
-
-    # Разбиваем на чанки
-    for i in range(0, len(mpn_list), chunk_size):
-        chunk = mpn_list[i:i + chunk_size]
-        queries = [{"mpn": item["mpn"]} for item in chunk]
-        variables = {"queries": queries}
-
-        app.logger.info(f"Отправка GraphQL запроса к Nexar (чанк {i // chunk_size + 1}): {queries}")
-
-        # Retry с экспоненциальным backoff
+        # --- Retry ---
         for attempt in range(1, max_retries + 1):
             try:
                 results = nexar.get_query(gqlQuery, variables)
@@ -174,193 +186,156 @@ def process_chunk(mpn_list, mode, chunk_size=15, max_retries=3):
                 break
             except Exception as e:
                 wait = 2 ** (attempt - 1)
-                msg = str(e)
-                app.logger.warning(f"Nexar API ошибка (попытка {attempt}/{max_retries}): {msg}. Жду {wait}s перед повтором.")
-                time.sleep(wait)
+                app.logger.warning(f"Nexar API ошибка (попытка {attempt}/{max_retries}): {e}. Жду {wait}s.")
+                await asyncio.sleep(wait)
         else:
             app.logger.error(f"Nexar API не ответил корректно после {max_retries} попыток для чанка {i // chunk_size + 1}")
-            # добавляем статус ошибки для каждого MPN в чанке
-            for item in chunk:
-                output_data.append({
-                    "mpn": item["mpn"],
-                    "manufacturer": None,
-                    "manufacturer_id": None,
-                    "manufacturer_name": None,
-                    "seller_id": None,
-                    "seller_name": None,
-                    "seller_verified": None,
-                    "seller_homepageUrl": None,
-                    "stock": None,
-                    "offer_quantity": None,
-                    "price": None,
-                    "currency": None,
-                    "category_id": None,
-                    "category_name": None,
-                    "image_url": None,
-                    "description": None,
-                    "requested_quantity": item.get("quantity"),
-                    "status": "Ошибка Nexar"
-                })
             continue
 
-        # Обработка успешного ответа
-        for query, item in zip(results.get("supMultiMatch", []), chunk):
-            mpn = item["mpn"]
-            qty = item.get("quantity")
-            parts = query.get("parts", [])
+        # --- Обработка ответа ---
+        sup_multi = results.get("supMultiMatch", [])
+        if isinstance(sup_multi, dict):
+            sup_multi = [sup_multi]
 
-            if not parts:
-                output_data.append({
-                    "mpn": mpn,
-                    "manufacturer": None,
-                    "manufacturer_id": None,
-                    "manufacturer_name": None,
-                    "seller_id": None,
-                    "seller_name": None,
-                    "seller_verified": None,
-                    "seller_homepageUrl": None,
-                    "stock": None,
-                    "offer_quantity": None,
-                    "price": None,
-                    "currency": None,
-                    "category_id": None,
-                    "category_name": None,
-                    "image_url": None,
-                    "description": None,
-                    "requested_quantity": qty,
-                    "status": "Не найдено"
-                })
-                continue
+        for multi_item in sup_multi:
+            parts_list = multi_item.get("parts", []) if isinstance(multi_item, dict) else []
+            for part in parts_list:
+                output_data.extend(process_part(part, part.get("mpn"), ALLOWED_SELLERS))
 
-            for part in parts:
-                part_name = part.get("name", "")
-                manufacturer = part_name.rsplit(' ', 1)[0]
-
-                manufacturer_data = part.get("manufacturer")
-
-                if isinstance(manufacturer_data, dict):
-                    manufacturer_id = manufacturer_data.get("id", "")
-                    manufacturer_name = manufacturer_data.get("name", "")
-                else:
-                    manufacturer_id = ""
-                    manufacturer_name = manufacturer_data if isinstance(manufacturer_data, str) else ""
-
-                category = part.get("category") or {}
-                category_id = category.get("id", "")
-                category_name = category.get("name", "")
-
-                image_url = part.get("images", "") or []
-
-                descriptions = part.get("descriptions", "")
-
-                sellers = part.get("sellers", [])
-                for seller in sellers:
-                    seller_name = seller.get("company", {}).get("name", "")
-                    seller_id = seller.get("company", {}).get("id", "")
-                    seller_verified = seller.get("company", {}).get("isVerified", "")
-                    seller_homepageUrl = seller.get("company", {}).get("homepageUrl", "")
-
-                    if ALLOWED_SELLERS and seller_name not in ALLOWED_SELLERS:
-                        app.logger.debug(f"Продавец {seller_name} исключён (не в списке разрешённых).")
-                        continue
-
-                    offers = seller.get("offers", [])
-                    for offer in offers:
-                        stock = offer.get("inventoryLevel", "")
-                        prices = offer.get("prices", [])
-                        for price in prices:
-                            try:
-                                base_price = float(price.get("convertedPrice", 0))
-                            except (TypeError, ValueError):
-                                base_price = 0.0
-
-                            delivery_coef = 1.27
-                            markup = 1.18
-                            target_price_purchasing = base_price * 0.82  # минус 18%
-                            cost_with_delivery = target_price_purchasing + delivery_coef
-                            target_price_sales = target_price_purchasing + delivery_coef + markup
-
-                            output_data.append({
-                                "mpn": mpn,
-                                "manufacturer": manufacturer,
-                                "manufacturer_id": manufacturer_id,
-                                "manufacturer_name": manufacturer_name,
-                                "seller_id": seller_id,
-                                "seller_name": seller_name,
-                                "seller_verified": seller_verified,
-                                "seller_homepageUrl": seller_homepageUrl,
-                                "stock": stock,
-                                "offer_quantity": price.get("quantity", ""),
-                                "price": base_price,
-                                "currency": price.get("currency", ""),
-                                "category_id": category_id,
-                                "category_name": category_name,
-                                "image_url": image_url,
-                                "description": descriptions,
-                                "requested_quantity": qty,
-                                "status": "Найдено",
-                                "delivery_coef": delivery_coef,
-                                "markup": markup,
-                                "target_price_purchasing": round(target_price_purchasing, 2),
-                                "cost_with_delivery": round(cost_with_delivery, 2),
-                                "target_price_sales": round(target_price_sales, 2)
-                            })
-
-            if not any(d["mpn"] == mpn for d in output_data):
-                output_data.append({
-                    "mpn": mpn,
-                    "manufacturer": None,
-                    "manufacturer_id": None,
-                    "manufacturer_name": None,
-                    "seller_id": None,
-                    "seller_name": None,
-                    "seller_verified": None,
-                    "seller_homepageUrl": None,
-                    "stock": None,
-                    "offer_quantity": None,
-                    "price": None,
-                    "currency": None,
-                    "category_id": None,
-                    "category_name": None,
-                    "image_url": None,
-                    "description": None,
-                    "displayValue": None,
-                    "siValue": None,
-                    "units": None,
-                    "unitsName": None,
-                    "unitsSymbol": None,
-                    "value": None,
-                    "requested_quantity": qty,
-                    "status": "Не найдено"
-                })
-
-    app.logger.info(f"Сформированный output_data: {output_data}")
-
+    # --- 3. Применяем short-режим, если нужно ---
     if mode == "short":
         rate = get_usd_to_rub_rate()
-        app.logger.info(f"Текущий курс USD→RUB: {rate}")
-        output_data = [
-            {
-                "mpn": item["mpn"],
+        short_output = []
+        for item in output_data:
+            price_rub = round(item["price"] * rate, 2) if item.get("price") else None
+            short_output.append({
+                "mpn": item.get("mpn"),
                 "manufacturer": item.get("manufacturer"),
                 "requested_quantity": item.get("requested_quantity"),
                 "stock": item.get("stock"),
-                "price": round(item.get("price", 0) * rate, 2) if item.get("price") else None,
-                "currency": "RUB",
+                "price": price_rub,
+                "currency": "RUB" if price_rub else None,
                 "status": item.get("status")
-            }
-            for i, item in enumerate(output_data)
-        ]
-        app.logger.info(f"Короткие данные: {output_data}")
-
-    else:
-        # оставляем полные данные
-        pass
-    app.logger.info(f"Режим обработки: {mode}")
+            })
+        output_data = short_output
 
     return output_data
 
-@lru_cache(maxsize=1)
+# Остальные функции (process_part, get_usd_to_rub_rate) оставляем без изменений
+
+def process_part(part, mpn, ALLOWED_SELLERS, requested_quantity=None):
+    """
+    Универсальная обработка результата одного part
+    Возвращает список записей (часто 1+, если несколько цен).
+    """
+
+    output_records = []
+
+    # === Безопасное извлечение данных ===
+    part_name = part.get("name") or ""
+    manufacturer_node = part.get("manufacturer") or {}
+    category_node = part.get("category") or {}
+    images = part.get("images") or []
+    descriptions = part.get("descriptions") or []
+    sellers = part.get("sellers") or []
+
+    # manufacturer
+    if isinstance(manufacturer_node, dict):
+        manufacturer_id = manufacturer_node.get("id")
+        manufacturer_name = manufacturer_node.get("name")
+    else:
+        manufacturer_id = None
+        manufacturer_name = str(manufacturer_node)
+
+    # category
+    category_id = category_node.get("id")
+    category_name = category_node.get("name")
+
+    # image URL (берём первую)
+    image_url = images[0]["url"] if images and isinstance(images[0], dict) else None
+
+    # description (тоже первую)
+    description = descriptions[0]["text"] if descriptions and isinstance(descriptions[0], dict) else None
+
+    # === Проходим всех продавцов ===
+    for seller in sellers:
+        company = seller.get("company") or {}
+        seller_name = company.get("name")
+        seller_id = company.get("id")
+        seller_verified = company.get("isVerified")
+        seller_homepageUrl = company.get("homepageUrl")
+
+        if not seller_name:
+            continue
+
+        if ALLOWED_SELLERS and seller_name not in ALLOWED_SELLERS:
+            continue
+
+        offers = seller.get("offers") or []
+
+        # === Проходим офферы ===
+        for offer in offers:
+            stock = offer.get("inventoryLevel")
+            prices = offer.get("prices") or []
+
+            # цены внутри оффера
+            for price in prices:
+                base_price = price.get("convertedPrice")
+                currency = price.get("convertedCurrency") or price.get("currency")
+                offer_quantity = price.get("quantity")
+
+                # защита от кривых данных
+                try:
+                    base_price = float(base_price)
+                except:
+                    base_price = None
+
+                # Ценообразование
+                delivery_coef = 1.27
+                markup = 1.18
+
+                if base_price:
+                    target_price_purchasing = base_price * 0.82
+                    cost_with_delivery = target_price_purchasing + delivery_coef
+                    target_price_sales = target_price_purchasing + delivery_coef + markup
+                else:
+                    target_price_purchasing = None
+                    cost_with_delivery = None
+                    target_price_sales = None
+
+                output_records.append({
+                    "mpn": mpn,
+                    "manufacturer": manufacturer_name,
+                    "manufacturer_id": manufacturer_id,
+                    "manufacturer_name": manufacturer_name,
+
+                    "seller_id": seller_id,
+                    "seller_name": seller_name,
+                    "seller_verified": seller_verified,
+                    "seller_homepageUrl": seller_homepageUrl,
+
+                    "stock": stock,
+                    "offer_quantity": offer_quantity,
+                    "price": base_price,
+                    "currency": currency,
+
+                    "category_id": category_id,
+                    "category_name": category_name,
+                    "image_url": image_url,
+                    "description": description,
+
+                    "requested_quantity": requested_quantity,
+                    "status": "Найдено",
+
+                    "delivery_coef": delivery_coef,
+                    "markup": markup,
+                    "target_price_purchasing": round(target_price_purchasing, 2) if target_price_purchasing else None,
+                    "cost_with_delivery": round(cost_with_delivery, 2) if cost_with_delivery else None,
+                    "target_price_sales": round(target_price_sales, 2) if target_price_sales else None
+                })
+
+    return output_records
+
 def get_usd_to_rub_rate_cached():
     url = "https://api.exchangerate.host/latest?base=USD&symbols=RUB"
     r = requests.get(url, timeout=5)
@@ -389,4 +364,6 @@ def get_usd_to_rub_rate():
     return USD_RUB_RATE
 
 if __name__ == '__main__':
-    app.run(host=os.getenv("HOST"), port=os.getenv("PORT"))
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 5000))
+    app.run(host=host, port=port)
