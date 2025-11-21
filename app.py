@@ -17,7 +17,22 @@ app = Flask(__name__)
 client_app = os.getenv("CLIENT_APP")
 client_tellur = os.getenv("CLIENT_TELLUR")
 
-CORS(app, resources={r"/api/process": {"origins": [client_app, client_tellur]}})
+CORS(app, resources={
+    r"/api/process": {
+        "origins": [client_app, client_tellur],
+        "methods": ["POST"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = client_tellur
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
