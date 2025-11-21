@@ -17,15 +17,7 @@ app = Flask(__name__)
 client_app = os.getenv("CLIENT_APP")
 client_tellur = os.getenv("CLIENT_TELLUR")
 
-origins = []
-if client_app:
-    origins.append(client_app)
-if client_tellur:
-    origins.append(client_tellur)
-if not origins:
-    origins = "*"
-
-CORS(app, resources={r"/api/process": {"origins": origins}})
+CORS(app, resources={r"/api/process": {"origins": [client_app, client_tellur]}})
 
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
