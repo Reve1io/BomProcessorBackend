@@ -371,6 +371,6 @@ def get_usd_to_rub_rate():
     return USD_RUB_RATE
 
 if __name__ == '__main__':
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", 5000))
+    host = os.getenv("HOST", os.getenv("HOST"))
+    port = int(os.getenv("PORT", os.getenv("PORT")))
     app.run(host=host, port=port)
