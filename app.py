@@ -135,6 +135,7 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         }
         '''
         variables = {"q": mpn_item["mpn"]}
+
         for attempt in range(1, max_retries + 1):
             try:
                 result = nexar.get_query(gqlQuery, variables)
@@ -157,6 +158,15 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
     # Запускаем partial для всех исходных MPN
     partial_tasks = [partial_request_variations(item) for item in mpn_list]
     all_variants_lists = await asyncio.gather(*partial_tasks)
+
+    mapping = {
+        item["mpn"]: {
+            "variants": variants,
+            "quantity": item.get("quantity"),
+            "results": {}   # сюда попадут найденные part
+        }
+        for item, variants in zip(mpn_list, all_variants_lists)
+    }
 
     # --- 2. Multi-запросы для всех найденных вариантов ---
     # Преобразуем список списков в плоский список словарей для multi-запросов
@@ -199,15 +209,43 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
             app.logger.error(f"Nexar API не ответил корректно после {max_retries} попыток для чанка {i // chunk_size + 1}")
             continue
 
-        # --- Обработка ответа ---
-        sup_multi = results.get("supMultiMatch", [])
-        if isinstance(sup_multi, dict):
-            sup_multi = [sup_multi]
+        multi_res = results.get("supMultiMatch", [])
+        if isinstance(multi_res, dict):
+            multi_res = [multi_res]
 
-        for multi_item in sup_multi:
-            parts_list = multi_item.get("parts", []) if isinstance(multi_item, dict) else []
-            for part in parts_list:
-                output_data.extend(process_part(part, part.get("mpn"), ALLOWED_SELLERS))
+        # распределение результатов назад в mapping
+        for block in multi_res:
+            for part in block.get("parts", []):
+                mpn_found = part.get("mpn")
+                if not mpn_found:
+                    continue
+                # ищем, кому принадлежит
+                for req, data in mapping.items():
+                    if mpn_found in data["variants"]:
+                        data["results"][mpn_found] = part
+                        break
+
+    # ---------- 3. Проходим mapping и собираем output ----------
+    for requested_mpn, data in mapping.items():
+        qty = data["quantity"]
+
+        if not data["results"]:
+            output_data.append({
+                "requested_mpn": requested_mpn,
+                "mpn": None,
+                "status": "Не найдено"
+            })
+            continue
+
+        for found_mpn, part in data["results"].items():
+            rows = process_part(
+                part=part,
+                original_mpn=requested_mpn,
+                found_mpn=found_mpn,
+                ALLOWED_SELLERS=ALLOWED_SELLERS,
+                requested_quantity=qty
+            )
+            output_data.extend(rows)
 
     # --- 3. Применяем short-режим, если нужно ---
     if mode == "short":
@@ -216,6 +254,7 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         for item in output_data:
             price_rub = round(item["price"] * rate, 2) if item.get("price") else None
             short_output.append({
+                "requested_mpn": item["requested_mpn"],
                 "mpn": item.get("mpn"),
                 "manufacturer": item.get("manufacturer"),
                 "requested_quantity": item.get("requested_quantity"),
@@ -230,7 +269,7 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
 
 # Остальные функции (process_part, get_usd_to_rub_rate) оставляем без изменений
 
-def process_part(part, mpn, ALLOWED_SELLERS, requested_quantity=None):
+def process_part(part, original_mpn, found_mpn, ALLOWED_SELLERS, requested_quantity=None):
     """
     Универсальная обработка результата одного part
     Возвращает список записей (часто 1+, если несколько цен).
@@ -239,6 +278,7 @@ def process_part(part, mpn, ALLOWED_SELLERS, requested_quantity=None):
     output_records = []
 
     # === Безопасное извлечение данных ===
+    original_mpn = original_mpn or ""
     part_name = part.get("name") or ""
     manufacturer_node = part.get("manufacturer") or {}
     category_node = part.get("category") or {}
@@ -263,6 +303,7 @@ def process_part(part, mpn, ALLOWED_SELLERS, requested_quantity=None):
 
     # description (тоже первую)
     description = descriptions[0]["text"] if descriptions and isinstance(descriptions[0], dict) else None
+
 
     # === Проходим всех продавцов ===
     for seller in sellers:
@@ -311,7 +352,8 @@ def process_part(part, mpn, ALLOWED_SELLERS, requested_quantity=None):
                     target_price_sales = None
 
                 output_records.append({
-                    "mpn": mpn,
+                    "requested_mpn": original_mpn,
+                    "mpn": found_mpn,
                     "manufacturer": manufacturer_name,
                     "manufacturer_id": manufacturer_id,
                     "manufacturer_name": manufacturer_name,
