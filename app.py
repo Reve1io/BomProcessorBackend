@@ -104,7 +104,9 @@ def process_bom():
     app.logger.info(f"Сформирован список MPN для обработки: {mpn_list}")
 
     try:
-        nexar_data = asyncio.run(process_all_mpn(mpn_list, mode))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        nexar_data = loop.run_until_complete(process_all_mpn(mpn_list, mode))
     except Exception as e:
         app.logger.error(f"Ошибка при обработке: {str(e)}", exc_info=True)
         return jsonify({"status": "error", "message": str(e) or "Неизвестная ошибка при обработке"}), 500
@@ -123,7 +125,6 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
 
     output_data = []
 
-    # --- 1. Partial-запросы для поиска всех вариаций ---
     async def partial_request_variations(mpn_item):
         gqlQuery = '''
         query Search ($q: String!) {
@@ -136,6 +137,8 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         '''
         variables = {"q": mpn_item["mpn"]}
 
+        results = {}
+
         for attempt in range(1, max_retries + 1):
             try:
                 result = nexar.get_query(gqlQuery, variables)
@@ -147,7 +150,7 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         else:
             return [mpn_item["mpn"]]
 
-        items = result.get("supSearch", {}).get("results", [])
+        items = (results.get("supSearch", {}).get("results")) or []
         variants = []
         for item in items:
             part = item.get("part")
@@ -155,7 +158,6 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
                 variants.append(part["mpn"])
         return variants or [mpn_item["mpn"]]
 
-    # Запускаем partial для всех исходных MPN
     partial_tasks = [partial_request_variations(item) for item in mpn_list]
     all_variants_lists = await asyncio.gather(*partial_tasks)
 
@@ -163,16 +165,13 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         item["mpn"]: {
             "variants": variants,
             "quantity": item.get("quantity"),
-            "results": {}   # сюда попадут найденные part
+            "results": {}
         }
         for item, variants in zip(mpn_list, all_variants_lists)
     }
 
-    # --- 2. Multi-запросы для всех найденных вариантов ---
-    # Преобразуем список списков в плоский список словарей для multi-запросов
     multi_mpn_list = [{"mpn": v} for sublist in all_variants_lists for v in sublist]
 
-    # Разбиваем на чанки
     for i in range(0, len(multi_mpn_list), chunk_size):
         chunk = multi_mpn_list[i:i + chunk_size]
         variables = {"queries": [{"mpn": item["mpn"]} for item in chunk]}
@@ -195,7 +194,6 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         }
         '''
 
-        # --- Retry ---
         for attempt in range(1, max_retries + 1):
             try:
                 results = nexar.get_query(gqlQuery, variables)
@@ -213,19 +211,17 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         if isinstance(multi_res, dict):
             multi_res = [multi_res]
 
-        # распределение результатов назад в mapping
         for block in multi_res:
             for part in block.get("parts", []):
                 mpn_found = part.get("mpn")
                 if not mpn_found:
                     continue
-                # ищем, кому принадлежит
+
                 for req, data in mapping.items():
                     if mpn_found in data["variants"]:
                         data["results"][mpn_found] = part
                         break
 
-    # ---------- 3. Проходим mapping и собираем output ----------
     for requested_mpn, data in mapping.items():
         qty = data["quantity"]
 
@@ -247,7 +243,6 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
             )
             output_data.extend(rows)
 
-    # --- 3. Применяем short-режим, если нужно ---
     if mode == "short":
         rate = get_usd_to_rub_rate()
         short_output = []
@@ -267,17 +262,11 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
 
     return output_data
 
-# Остальные функции (process_part, get_usd_to_rub_rate) оставляем без изменений
 
 def process_part(part, original_mpn, found_mpn, ALLOWED_SELLERS, requested_quantity=None):
-    """
-    Универсальная обработка результата одного part
-    Возвращает список записей (часто 1+, если несколько цен).
-    """
 
     output_records = []
 
-    # === Безопасное извлечение данных ===
     original_mpn = original_mpn or ""
     part_name = part.get("name") or ""
     manufacturer_node = part.get("manufacturer") or {}
