@@ -26,13 +26,13 @@ CORS(app, resources={
     }
 })
 
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = client_tellur
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    return response
+#@app.after_request
+#def add_cors_headers(response):
+#    response.headers["Access-Control-Allow-Origin"] = client_tellur
+#    response.headers["Access-Control-Allow-Credentials"] = "true"
+#    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+#    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+#    return response
 
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
@@ -104,7 +104,9 @@ def process_bom():
     app.logger.info(f"Сформирован список MPN для обработки: {mpn_list}")
 
     try:
-        nexar_data = asyncio.run(process_all_mpn(mpn_list, mode))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        nexar_data = loop.run_until_complete(process_all_mpn(mpn_list, mode))
     except Exception as e:
         app.logger.error(f"Ошибка при обработке: {str(e)}", exc_info=True)
         return jsonify({"status": "error", "message": str(e) or "Неизвестная ошибка при обработке"}), 500
@@ -138,7 +140,8 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
 
         for attempt in range(1, max_retries + 1):
             try:
-                result = nexar.get_query(gqlQuery, variables)
+                results = nexar.get_query(gqlQuery, variables)
+                app.logger.info(f"Ответ на Partial-запрос от Nexar для {mpn_item['mpn']} : {results}")
                 break
             except Exception as e:
                 wait = 2 ** (attempt - 1)
@@ -147,7 +150,7 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         else:
             return [mpn_item["mpn"]]
 
-        items = result.get("supSearch", {}).get("results", [])
+        items = (results.get("supSearch") or {}).get("results") or []
         variants = []
         for item in items:
             part = item.get("part")
