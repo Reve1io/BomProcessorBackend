@@ -137,11 +137,10 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         '''
         variables = {"q": mpn_item["mpn"]}
 
-        results = {}
-
         for attempt in range(1, max_retries + 1):
             try:
-                result = nexar.get_query(gqlQuery, variables)
+                results = nexar.get_query(gqlQuery, variables)
+                app.logger.info(f"Ответ на Partial-запрос от Nexar для {mpn_item['mpn']} : {results}")
                 break
             except Exception as e:
                 wait = 2 ** (attempt - 1)
@@ -150,7 +149,8 @@ async def process_all_mpn(mpn_list, mode, chunk_size=15, max_retries=3):
         else:
             return [mpn_item["mpn"]]
 
-        items = (results.get("supSearch", {}).get("results")) or []
+        items = (results.get("supSearch") or {}).get("results") or []
+
         variants = []
         for item in items:
             part = item.get("part")
