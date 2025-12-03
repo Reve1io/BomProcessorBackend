@@ -5,9 +5,12 @@ import base64
 import json
 import time
 from typing import Dict
+from dotenv import load_dotenv
 
-NEXAR_URL = "https://api.nexar.com/graphql"
-PROD_TOKEN_URL = "https://identity.nexar.com/connect/token"
+load_dotenv()
+
+NEXAR_URL = os.getenv("NEXAR_URL")
+PROD_TOKEN_URL = os.getenv("PROD_TOKEN_URL")
 
 def get_token(client_id, client_secret):
     """Return the Nexar token from the client_id and client_secret provided."""
