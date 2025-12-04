@@ -4,10 +4,14 @@ import asyncio
 from api.NexarClient import NexarClient
 import requests
 from dotenv import load_dotenv
+from rabbit.producer import RabbitMQProducer
 
 load_dotenv()
 
 async def process_all_mpn(mpn_list, mode, logger, chunk_size=15, max_retries=3):
+
+    producer = RabbitMQProducer()
+
     clientId = os.getenv("CLIENT_ID")
     clientSecret = os.getenv("CLIENT_SECRET")
     nexar = NexarClient(clientId, clientSecret)
@@ -30,10 +34,15 @@ async def process_all_mpn(mpn_list, mode, logger, chunk_size=15, max_retries=3):
         '''
         variables = {"q": mpn_item["mpn"]}
 
+        payload = {
+            "gql": gqlQuery,
+            "variables": variables
+        }
+
         for attempt in range(1, max_retries + 1):
             try:
-                results = nexar.get_query(gqlQuery, variables)
-                logger.info(f"Ответ на Partial-запрос от Nexar для {mpn_item['mpn']} : {results}")
+                results = producer.call_supsearch(payload)
+                logger.info(f"Ответ Worker на Partial-запрос от Nexar для {mpn_item['mpn']} : {results}")
                 break
             except Exception as e:
                 wait = 2 ** (attempt - 1)
@@ -87,18 +96,14 @@ async def process_all_mpn(mpn_list, mode, logger, chunk_size=15, max_retries=3):
         }
         '''
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                results = nexar.get_query(gqlQuery, variables)
-                logger.info(f"Ответ от Nexar (чанк {i // chunk_size + 1}): {results}")
-                break
-            except Exception as e:
-                wait = 2 ** (attempt - 1)
-                logger.warning(f"Nexar API ошибка (попытка {attempt}/{max_retries}): {e}. Жду {wait}s.")
-                await asyncio.sleep(wait)
-        else:
-            logger.error(f"Nexar API не ответил корректно после {max_retries} попыток для чанка {i // chunk_size + 1}")
-            continue
+        task_payload = {
+            "gql": gqlQuery,
+            "variables": variables
+        }
+
+        results = producer.call(task_payload)
+
+        logger.info(f"Ответ Worker для чанка {i // chunk_size + 1}: {results}")
 
         multi_res = results.get("supMultiMatch", [])
         if isinstance(multi_res, dict):
