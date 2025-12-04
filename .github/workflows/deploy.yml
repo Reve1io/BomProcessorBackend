@@ -1,9 +1,9 @@
-name: CI/CD Deploy Bom Processor
+name: CI/CD Deploy dev Bom Processor
 
 on:
   push:
     branches:
-      - master
+      - dev
 
 jobs:
   deploy:
@@ -31,7 +31,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            cd /home/BomProcessorBackend
+            cd /home/dev-BomProcessorBackend
             git fetch origin master
             # Сохраняем .env перед сбросом
             cp .env /tmp/env_backup
@@ -41,4 +41,3 @@ jobs:
             mv /tmp/env_backup .env
             source venv/bin/activate
             pip install -r requirements.txt
-            systemctl restart bom-processor.service
