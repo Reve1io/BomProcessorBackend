@@ -115,6 +115,14 @@ async def process_all_mpn(mpn_list, mode, logger, chunk_size=15, max_retries=3):
                         data["results"][mpn_found] = part
                         break
 
+                for v in data["variants"]:
+                    if mpn_found.startswith(v) or v.startswith(mpn_found):
+                        data["results"][mpn_found] = part
+                        break
+
+                if mpn_found in data["results"]:
+                    break
+
     for requested_mpn, data in mapping.items():
         qty = data["quantity"]
 
@@ -264,6 +272,18 @@ def process_part(part, original_mpn, found_mpn, ALLOWED_SELLERS, requested_quant
                     "cost_with_delivery": round(cost_with_delivery, 2) if cost_with_delivery else None,
                     "target_price_sales": round(target_price_sales, 2) if target_price_sales else None
                 })
+
+    if not output_records:
+        return [{
+            "requested_mpn": original_mpn,
+            "mpn": None,
+            "status": "Нет офферов от разрешённых продавцов",
+            "manufacturer": None,
+            "requested_quantity": requested_quantity,
+            "stock": None,
+            "price": None,
+            "currency": None
+        }]
 
     return output_records
 
