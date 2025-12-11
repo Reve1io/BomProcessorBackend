@@ -4,24 +4,29 @@ from flask import Flask, request, jsonify
 import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
-from flask_cors import CORS
 from services.nexar_service import process_all_mpn
+from flask_cors import CORS
 
 load_dotenv()
 
 app = Flask(__name__)
 
-client_app = os.getenv("CLIENT_APP")
+environment = os.getenv("ENVIRONMENT", "prod")
+client_app = os.getenv("CLIENT_APP", "http://localhost:5173")
 client_tellur = os.getenv("CLIENT_TELLUR")
 
-CORS(app, resources={
-    r"/api/process": {
-        "origins": [client_app, client_tellur],
-        "methods": ["POST"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
-    }
-})
+if environment == "local":
+    print("Running in LOCAL mode → enabling Flask CORS")
+    CORS(app, resources={
+        r"/api/*": {
+            "origins": [client_app, client_tellur],
+            "methods": ["POST", "GET", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "supports_credentials": True
+        }
+    })
+else:
+    print("Running in PROD mode → CORS handled by NGINX")
 
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
