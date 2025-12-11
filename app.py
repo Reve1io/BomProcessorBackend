@@ -102,6 +102,6 @@ def process_bom():
     return jsonify({"data": nexar_data})
 
 if __name__ == '__main__':
-    host = os.getenv("HOST", os.getenv("HOST"))
-    port = int(os.getenv("PORT", os.getenv("PORT")))
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 5002))
     app.run(host=host, port=port)
