@@ -52,7 +52,7 @@ if getattr(gunicorn_logger, 'handlers', None):
     app.logger.setLevel(gunicorn_logger.level)
     app.logger.propagate = False
 
-#Старая версия эндпоинта
+#Старая версия эндпоинта (не использовать)
 @app.route('/api/process', methods=['POST'])
 def process_bom():
     data = request.get_json(force=True)
