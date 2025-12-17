@@ -4,6 +4,7 @@ import asyncio
 from api.NexarClient import NexarClient
 import requests
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
 
@@ -313,3 +314,29 @@ def get_usd_to_rub_rate(logger):
             # fallback на старый курс
             USD_RUB_RATE = USD_RUB_RATE or 100.0
     return USD_RUB_RATE
+
+logger = logging.getLogger(__name__)
+
+# НОВАЯ функция для RQ-задачи
+def run_nexar_task(mpn_list, mode):
+    """
+    Синхронная обертка для асинхронной логики,
+    которая будет запускаться RQ воркером.
+    """
+    # Создаем временный логгер для задачи, чтобы не зависеть от logger Flask
+    task_logger = logger
+    task_logger.setLevel(logging.INFO)
+
+    # Запуск асинхронной логики
+    try:
+        results = asyncio.run(process_all_mpn(mpn_list, mode, task_logger))
+        return {
+            "status": "COMPLETED",
+            "result": results
+        }
+    except Exception as e:
+        task_logger.error(f"Ошибка при выполнении задачи Nexar: {e}", exc_info=True)
+        return {
+            "status": "FAILED",
+            "error": str(e)
+        }

@@ -1,9 +1,9 @@
-name: CI/CD Deploy Bom Processor
+name: CI/CD Deploy dev Bom Processor
 
 on:
   push:
     branches:
-      - master
+      - dev
 
 jobs:
   deploy:
@@ -13,32 +13,35 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          # Можно добавить pytest, если есть тесты
-          # pytest
-
-      - name: Deploy to remote server
+      - name: Deploy to remote server (SSH)
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
+
           script: |
-            cd /home/BomProcessorBackend
-            git fetch origin master
-            # Сохраняем .env перед сбросом
-            cp .env /tmp/env_backup
-            git reset --hard origin/master
+            echo "👉 Переходим в директорию проекта"
+            cd /home/dev/dev-BomProcessorBackend
+
+            echo "👉 Сохраняем .env"
+            cp .env /tmp/env_backup_bom
+
+            echo "👉 Обновляем репозиторий из ветки dev"
+            git fetch origin dev
+            git reset --hard origin/dev
             git clean -fd
-            # Восстанавливаем .env
-            mv /tmp/env_backup .env
-            source venv/bin/activate
-            pip install -r requirements.txt
-            systemctl restart bom-processor.service
+
+            echo "👉 Возвращаем .env"
+            mv /tmp/env_backup_bom .env
+
+            echo "👉 Останавливаем текущие контейнеры"
+            docker compose down
+
+            echo "👉 Строим новый образ (один раз)"
+            docker compose build --no-cache
+
+            echo "👉 Запускаем контейнеры"
+            docker compose up -d
+
+            echo "🎉 Деплой завершён успешно!"
