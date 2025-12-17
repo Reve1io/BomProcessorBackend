@@ -1,11 +1,14 @@
 import os
 import asyncio
-from flask import Flask, request, jsonify
 import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from services.nexar_service import process_all_mpn
 from flask_cors import CORS
+from flask import Flask, request, jsonify
+from redis_config import task_queue, redis_conn
+from rq.job import Job
+from services.nexar_service import run_nexar_task
 
 load_dotenv()
 
@@ -106,12 +109,6 @@ def process_bom():
         return jsonify({"status": "error", "message": str(e) or "Неизвестная ошибка при обработке"}), 500
 
     return jsonify({"data": nexar_data})
-
-
-from flask import Flask, request, jsonify
-from redis_config import task_queue, redis_conn
-from rq.job import Job
-from services.nexar_service import run_nexar_task
 
 app = Flask(__name__)
 
