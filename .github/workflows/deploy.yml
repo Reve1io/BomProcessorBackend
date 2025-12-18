@@ -1,9 +1,9 @@
-name: CI/CD Deploy dev Bom Processor
+name: CI/CD Deploy Bom Processor
 
 on:
   push:
     branches:
-      - dev
+      - master
 
 jobs:
   deploy:
@@ -22,14 +22,14 @@ jobs:
 
           script: |
             echo "👉 Переходим в директорию проекта"
-            cd /home/dev/dev-BomProcessorBackend
+            cd /home/BomProcessorBackend
 
             echo "👉 Сохраняем .env"
             cp .env /tmp/env_backup_bom
 
-            echo "👉 Обновляем репозиторий из ветки dev"
-            git fetch origin dev
-            git reset --hard origin/dev
+            echo "👉 Обновляем репозиторий из ветки master"
+            git fetch origin master
+            git reset --hard origin/master
             git clean -fd
 
             echo "👉 Возвращаем .env"
