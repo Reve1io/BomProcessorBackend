@@ -81,7 +81,7 @@ async def process_all_mpn(mpn_list, mode, logger, chunk_size=15, max_retries=3):
               manufacturer { id name }
               sellers {
                 company { id name isVerified homepageUrl }
-                offers { inventoryLevel prices { quantity currency convertedPrice convertedCurrency } }
+                offers { inventoryLevel prices { quantity price } }
               }
             }
           }
@@ -217,62 +217,68 @@ def process_part(part, original_mpn, found_mpn, ALLOWED_SELLERS, requested_quant
             stock = offer.get("inventoryLevel")
             prices = offer.get("prices") or []
 
-            # цены внутри оффера
+            price_breaks = []
+
             for price in prices:
-                base_price = price.get("convertedPrice")
+                try:
+                    base_price = float(price.get("price"))
+                except:
+                    continue
+
                 currency = price.get("convertedCurrency") or price.get("currency")
                 offer_quantity = price.get("quantity")
 
-                # защита от кривых данных
-                try:
-                    base_price = float(base_price)
-                except:
-                    base_price = None
-
-                # Ценообразование
                 delivery_coef = 1.27
                 markup = 1.18
 
-                if base_price:
-                    target_price_purchasing = base_price * 0.82
-                    cost_with_delivery = target_price_purchasing + delivery_coef
-                    target_price_sales = target_price_purchasing + delivery_coef + markup
-                else:
-                    target_price_purchasing = None
-                    cost_with_delivery = None
-                    target_price_sales = None
+                target_price_purchasing = base_price * 0.82
+                cost_with_delivery = target_price_purchasing + delivery_coef
+                target_price_sales = target_price_purchasing + delivery_coef + markup
 
-                output_records.append({
-                    "requested_mpn": original_mpn,
-                    "mpn": found_mpn,
-                    "manufacturer": manufacturer_name,
-                    "manufacturer_id": manufacturer_id,
-                    "manufacturer_name": manufacturer_name,
-
-                    "seller_id": seller_id,
-                    "seller_name": seller_name,
-                    "seller_verified": seller_verified,
-                    "seller_homepageUrl": seller_homepageUrl,
-
-                    "stock": stock,
-                    "offer_quantity": offer_quantity,
+                price_breaks.append({
+                    "quantity": offer_quantity,
                     "price": base_price,
                     "currency": currency,
-
-                    "category_id": category_id,
-                    "category_name": category_name,
-                    "image_url": image_url,
-                    "description": description,
-
-                    "requested_quantity": requested_quantity,
-                    "status": "Найдено",
-
-                    "delivery_coef": delivery_coef,
-                    "markup": markup,
-                    "target_price_purchasing": round(target_price_purchasing, 2) if target_price_purchasing else None,
-                    "cost_with_delivery": round(cost_with_delivery, 2) if cost_with_delivery else None,
-                    "target_price_sales": round(target_price_sales, 2) if target_price_sales else None
+                    "target_price_purchasing": round(target_price_purchasing, 2),
+                    "cost_with_delivery": round(cost_with_delivery, 2),
+                    "target_price_sales": round(target_price_sales, 2)
                 })
+
+            # если нет валидных цен — пропускаем оффер
+            if not price_breaks:
+                continue
+
+            # берём минимальную цену для основной строки (как делает getchips)
+            best_price = min(price_breaks, key=lambda x: x["price"])
+
+            output_records.append({
+                "requested_mpn": original_mpn,
+                "mpn": found_mpn,
+                "manufacturer": manufacturer_name,
+                "manufacturer_id": manufacturer_id,
+
+                "seller_id": seller_id,
+                "seller_name": seller_name,
+                "seller_verified": seller_verified,
+                "seller_homepageUrl": seller_homepageUrl,
+
+                "stock": stock,
+
+                # ГЛАВНОЕ
+                "priceBreaks": price_breaks,
+
+                # чтобы UI мог показать "основную" цену
+                "price": best_price["price"],
+                "currency": best_price["currency"],
+
+                "category_id": category_id,
+                "category_name": category_name,
+                "image_url": image_url,
+                "description": description,
+
+                "requested_quantity": requested_quantity,
+                "status": "Найдено"
+            })
 
     if not output_records:
         return [{

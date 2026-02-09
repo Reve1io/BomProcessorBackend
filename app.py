@@ -112,7 +112,7 @@ def process_bom():
 
 app = Flask(__name__)
 
-#Новый версия эндпоинта
+#Новая версия эндпоинта
 @app.route('/api/v1/process', methods=['POST'])
 def submit_task():
     data = request.get_json(force=True)
