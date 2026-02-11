@@ -2,7 +2,6 @@ services:
 
   app:
     build: .
-    container_name: app
     command: python app.py
     environment:
       - CLIENT_ID=${CLIENT_ID}
@@ -21,14 +20,13 @@ services:
       - REDIS_PORT=${REDIS_PORT}
       - REDIS_DB=${REDIS_DB}
     ports:
-      - "5003:5003"
+      - "5004:5003"
     restart: always
     networks:
       - backend
 
   worker:
     build: .
-    container_name: worker
     command: python worker.py
     environment:
       - CLIENT_ID=${CLIENT_ID}
