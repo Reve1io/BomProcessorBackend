@@ -12,10 +12,7 @@ async def process_all_mpn(mpn_list, mode, logger, chunk_size=15, max_retries=3):
     clientId = os.getenv("CLIENT_ID")
     clientSecret = os.getenv("CLIENT_SECRET")
     nexar = NexarClient(clientId, clientSecret)
-    ALLOWED_SELLERS = [
-        "Mouser", "Digi-Key", "Arrow", "TTI", "ADI",
-        "Coilcraft", "Rochester", "Verical", "Texas Instruments", "MINICIRCUITS"
-    ]
+    ALLOWED_SELLERS = ["Mouser", "DigiKey", "Arrow", "TTI", "ADI", "Coilcraft", "Rochester", "Verical", "Texas Instruments", "MINICIRCUITS"]
 
     output_data = []
 
@@ -70,8 +67,8 @@ async def process_all_mpn(mpn_list, mode, logger, chunk_size=15, max_retries=3):
         chunk = multi_mpn_list[i:i + chunk_size]
         variables = {"queries": [{"mpn": item["mpn"]} for item in chunk]}
         gqlQuery = '''
-            query PartQuery($queries: [PartMatchQuery!]!) {
-                matchParts(queries: $queries) {
+            query PartQuery($queries: [supPartMatchQuery!]!) {
+                supMultiMatch(queries: $queries) {
                     parts {
                         mpn
                         manufacturer { name }

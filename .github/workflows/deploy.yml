@@ -22,7 +22,7 @@ jobs:
 
           script: |
             echo "👉 Переходим в директорию проекта"
-            cd /home/BomProcessorBackend
+            cd /home/dev/dev-BomProcessorBackend
 
             echo "👉 Сохраняем .env"
             cp .env /tmp/env_backup_bom
